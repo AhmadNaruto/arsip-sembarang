@@ -1,0 +1,70 @@
+name: Android Build dengan Rust
+
+on:
+  workflow_dispatch:
+    inputs:
+      github_url:
+        description: 'URL Repository GitHub'
+        required: true
+        type: string
+      android_target:
+        description: 'Target Android (contoh: aarch64-linux-android)'
+        required: true
+        default: 'aarch64-linux-android'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup default stable
+      
+      - name: Setup target Android untuk Rust
+        run: |
+          source $HOME/.cargo/env
+          rustup target add ${{ github.event.inputs.android_target }}
+      
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r25c
+      
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: latest
+      
+      - name: Clone repository
+        run: |
+          git clone ${{ github.event.inputs.github_url }} repo
+      
+      - name: Konfigurasi cargo untuk Android
+        run: |
+          mkdir -p ~/.cargo
+          echo "[target.${{ github.event.inputs.android_target }}]" > ~/.cargo/config
+          echo "linker = \"${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/$(echo ${{ github.event.inputs.android_target }} | cut -d'-' -f1)-linux-android-clang\"" >> ~/.cargo/config
+      
+      - name: Build untuk Android
+        run: |
+          cd repo
+          source $HOME/.cargo/env
+          cargo build --target ${{ github.event.inputs.android_target }} --release
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: android-build-${{ github.event.inputs.android_target }}
+          path: repo/target/${{ github.event.inputs.android_target }}/release/
+          retention-days: 7
+          
