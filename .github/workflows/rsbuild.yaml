@@ -1,0 +1,111 @@
+name: Build RSPack for aarch64 Android (Termux)
+
+on:
+  workflow_dispatch:
+  
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    
+    env:
+      RUST_TARGET: aarch64-linux-android
+      NDK_VERSION: r28b
+      MIN_SDK_VERSION: 26
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        repository: 'web-infra-dev/rspack'
+        ref: '3335216d113fd613f1746a7d2f696ed79371daaf'
+        fetch-depth: 0
+
+    - name: Setup Pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        run_install: false
+        
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'pnpm'
+        
+    - name: Install dependencies
+      run: pnpm install
+
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        target: aarch64-linux-android
+        toolchain: nightly
+
+    - name: Install Android NDK
+      run: |
+        wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip
+        unzip -q android-ndk-${NDK_VERSION}-linux.zip
+        echo "ANDROID_NDK_HOME=$PWD/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
+
+    - name: Setup Cargo config
+      run: |
+        mkdir -p .cargo
+        cat > .cargo/config.toml << EOF
+        [target.${RUST_TARGET}]
+        linker = "aarch64-linux-android${MIN_SDK_VERSION}-clang"
+        ar = "llvm-ar"
+        rustflags = [
+          "-C", "link-arg=-landroid", 
+          "-C", "link-arg=-llog",
+          "-C", "opt-level=3",
+          "-C", "debuginfo=0",
+          "-C", "codegen-units=1",
+          "-C", "lto=fat"
+        ]
+        EOF
+
+    - name: Setup NDK toolchain path
+      run: |
+        echo "PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
+
+    - name: Build for Android ARM64
+      env:
+        CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android${MIN_SDK_VERSION}-clang
+        AR: llvm-ar
+      run: |
+        # Verify toolchain
+        which aarch64-linux-android${MIN_SDK_VERSION}-clang
+        which llvm-ar
+        aarch64-linux-android${MIN_SDK_VERSION}-clang --version
+        
+        # Build
+        # NODE_OPTIONS=--max_old_space_size=8192 pnpm run build:js
+        pnpm run build:binding:release
+      
+
+    - name: Find and verify binding
+      id: find-binding
+      run: |
+        BINDING_PATH=$(find . -name "rspack.android-arm64.node" | head -n 1)
+        
+        if [ -z "$BINDING_PATH" ]; then
+          echo "No binding file found! Build may have failed."
+          exit 1
+        fi
+        
+        echo "Found binding at: $BINDING_PATH"
+        echo "binding_path=$BINDING_PATH" >> $GITHUB_OUTPUT
+        
+        # Get file size
+        FILE_SIZE=$(stat -c%s "$BINDING_PATH")
+        echo "Binding file size: $FILE_SIZE bytes"
+        
+        # Verify file type
+        file "$BINDING_PATH"
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rspack-android-aarch64
+        path: "${{ steps.find-binding.outputs.binding_path }}"
+        retention-days: 7
+  
