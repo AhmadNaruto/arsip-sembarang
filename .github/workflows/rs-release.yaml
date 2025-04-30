@@ -1,0 +1,131 @@
+name: Build RSPack for aarch64 and armv7 Android (Termux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag, or commit) to build'
+        required: true
+        default: '3335216d113fd613f1746a7d2f696ed79371daaf'
+        type: string
+  
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        target: [aarch64, armv7]
+        include:
+          - target: aarch64
+            rust_target: aarch64-linux-android
+            linker: aarch64-linux-android
+            output_name: rspack.android-arm64.node
+          - target: armv7
+            rust_target: armv7-linux-androideabi
+            linker: armv7a-linux-androideabi
+            output_name: rspack.android-arm.node
+    
+    env:
+      NDK_VERSION: r28b
+      MIN_SDK_VERSION: 26
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        repository: 'web-infra-dev/rspack'
+        ref: ${{ github.event.inputs.ref }}
+        fetch-depth: 0
+
+    - name: Setup Pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        run_install: false
+        
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'pnpm'
+        
+    - name: Install dependencies
+      run: pnpm install
+
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        target: ${{ matrix.rust_target }}
+        toolchain: nightly
+
+    - name: Install Android NDK
+      run: |
+        wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip
+        unzip -q android-ndk-${NDK_VERSION}-linux.zip
+        echo "ANDROID_NDK_HOME=$PWD/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
+
+    - name: Setup Cargo config
+      run: |
+        mkdir -p .cargo
+        cat > .cargo/config.toml << EOF
+        [target.${{ matrix.rust_target }}]
+        linker = "${{ matrix.linker }}${MIN_SDK_VERSION}-clang"
+        ar = "llvm-ar"
+        rustflags = [
+          "-C", "link-arg=-landroid", 
+          "-C", "link-arg=-llog",
+          "-C", "opt-level=3",
+          "-C", "debuginfo=0",
+          "-C", "codegen-units=1",
+          "-C", "lto=fat"
+        ]
+        EOF
+
+    - name: Setup NDK toolchain path
+      run: |
+        echo "PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
+
+    - name: Set linker environment variable
+      run: |
+        UPPER_TARGET=$(echo "${{ matrix.rust_target }}" | tr '[:lower:]-' '[:upper:]_')
+        echo "CARGO_TARGET_${UPPER_TARGET}_LINKER=${{ matrix.linker }}${MIN_SDK_VERSION}-clang" >> $GITHUB_ENV
+
+    - name: Build for Android ${{ matrix.target }}
+      env:
+        AR: llvm-ar
+        RUST_TARGET: ${{ matrix.rust_target }}
+      run: |
+        # Verify toolchain
+        which ${{ matrix.linker }}${MIN_SDK_VERSION}-clang
+        which llvm-ar
+        ${{ matrix.linker }}${MIN_SDK_VERSION}-clang --version
+        
+        # Build
+        # NODE_OPTIONS=--max_old_space_size=8192 pnpm run build:js
+        pnpm run build:binding:release
+
+    - name: Find and verify binding
+      id: find-binding
+      run: |
+        BINDING_PATH=$(find . -name "rspack.android" | head -n 1)
+        
+        if [ -z "$BINDING_PATH" ]; then
+          echo "No ${{ matrix.target }} binding file found! Build may have failed."
+          exit 1
+        fi
+        
+        echo "Found ${{ matrix.target }} binding at: $BINDING_PATH"
+        echo "binding_path=$BINDING_PATH" >> $GITHUB_OUTPUT
+        
+        # Get file size
+        FILE_SIZE=$(stat -c%s "$BINDING_PATH")
+        echo "${{ matrix.target }} binding file size: $FILE_SIZE bytes"
+        
+        # Verify file type
+        file "$BINDING_PATH"
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rspack-android-${{ matrix.target }}
+        path: "${{ steps.find-binding.outputs.binding_path }}"
+        retention-days: 7
