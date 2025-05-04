@@ -2,6 +2,12 @@ name: Build RSPack for aarch64 Android (Termux)
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag, or commit) to build'
+        required: true
+        default: '3335216d113fd613f1746a7d2f696ed79371daaf'
+        type: string
   
 jobs:
   build:
@@ -17,8 +23,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: 'web-infra-dev/rspack'
-        ref: '3335216d113fd613f1746a7d2f696ed79371daaf'
-        fetch-depth: 0
+        ref: ${{ github.event.inputs.ref }}
 
     - name: Setup Pnpm
       uses: pnpm/action-setup@v4
@@ -53,14 +58,6 @@ jobs:
         [target.${RUST_TARGET}]
         linker = "aarch64-linux-android${MIN_SDK_VERSION}-clang"
         ar = "llvm-ar"
-        rustflags = [
-          "-C", "link-arg=-landroid", 
-          "-C", "link-arg=-llog",
-          "-C", "opt-level=3",
-          "-C", "debuginfo=0",
-          "-C", "codegen-units=1",
-          "-C", "lto=fat"
-        ]
         EOF
 
     - name: Setup NDK toolchain path
