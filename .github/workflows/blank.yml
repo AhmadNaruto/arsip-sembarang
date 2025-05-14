@@ -1,70 +1,105 @@
-name: Android Build dengan Rust
+name: LightningCSS Build dengan Rust
 
 on:
   workflow_dispatch:
     inputs:
-      github_url:
-        description: 'URL Repository GitHub'
+      ref:
+        description: 'Git ref (branch, tag, or commit) to build'
         required: true
-        type: string
-      android_target:
-        description: 'Target Android (contoh: aarch64-linux-android)'
-        required: true
-        default: 'aarch64-linux-android'
+        default: 'branch'
         type: string
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+
+    env:
+      RUST_TARGET: aarch64-linux-android
+      NDK_VERSION: r28b
+      MIN_SDK_VERSION: 26
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          repository: parcel-bundler/lightningcss
+          ref: ${{ github.event.inputs.ref }}
       
       - name: Setup Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          source $HOME/.cargo/env
-          rustup default stable
-      
-      - name: Setup target Android untuk Rust
-        run: |
-          source $HOME/.cargo/env
-          rustup target add ${{ github.event.inputs.android_target }}
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-linux-android
+          toolchain: nightly
       
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          ndk-version: r25c
-      
-      - name: Install pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: latest
-      
-      - name: Clone repository
+          ndk-version: ${{ env.NDK_VERSION }}
+          local-cache: true
+          link-to-sdk: true
+
+      - name: Setup NDK toolchain path
         run: |
-          git clone ${{ github.event.inputs.github_url }} repo
+          echo "PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
+
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+        
+      - name: Install dependencies
+        run: yarn install
       
       - name: Konfigurasi cargo untuk Android
         run: |
           mkdir -p ~/.cargo
-          echo "[target.${{ github.event.inputs.android_target }}]" > ~/.cargo/config
-          echo "linker = \"${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/$(echo ${{ github.event.inputs.android_target }} | cut -d'-' -f1)-linux-android-clang\"" >> ~/.cargo/config
-      
+          cat > .cargo/config.toml << EOF
+          [target.${RUST_TARGET}]
+          linker = "aarch64-linux-android${MIN_SDK_VERSION}-clang"
+          ar = "llvm-ar"
+          EOF
+
       - name: Build untuk Android
         run: |
-          cd repo
-          source $HOME/.cargo/env
-          cargo build --target ${{ github.event.inputs.android_target }} --release
+          # Verify toolchain
+          which aarch64-linux-android${MIN_SDK_VERSION}-clang
+          which llvm-ar
+          aarch64-linux-android${MIN_SDK_VERSION}-clang --version
+        
+          # Build
+          RUSTFLAGS="-C strip=symbols -C codegen-units=1 -A unnecessary-transmutes"
+          yarn build-release
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-      
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android${MIN_SDK_VERSION}-clang
+          AR: llvm-ar
+
+      - name: Find and verify binding
+        id: find-binding
+        run: |
+          BINDING_PATH=$(find . -name "lightningcss.android-arm64.node" | head -n 1)
+        
+          if [ -z "$BINDING_PATH" ]; then
+            echo "No binding file found! Build may have failed."
+            exit 1
+          fi
+
+          echo "Found binding at: $BINDING_PATH"
+          echo "binding_path=$BINDING_PATH" >> $GITHUB_OUTPUT
+        
+          # Get file size
+          FILE_SIZE=$(stat -c%s "$BINDING_PATH")
+          echo "Binding file size: $FILE_SIZE bytes"
+        
+          # Verify file type
+          file "$BINDING_PATH"
+
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: android-build-${{ github.event.inputs.android_target }}
-          path: repo/target/${{ github.event.inputs.android_target }}/release/
+          name: lightningcss.android-arm64.node
+          path: ${{ steps.find-binding.outputs.binding_path}}
           retention-days: 7
-          
